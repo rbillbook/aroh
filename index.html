@@ -91,6 +91,8 @@ body.cap [contenteditable]:hover,body.cap [contenteditable]:focus{background:non
   <span class="sp"></span>
   <label>Period <input type="date" id="pf"> to <input type="date" id="pt"></label>
   <button class="btn" id="addrow" type="button">+ Row</button>
+  <button class="btn" id="xlsbtn" type="button" title="Excel ki T-format file se poora form bharo">📥 Excel se bharo</button>
+  <input type="file" id="xlsfile" accept=".xlsx,.xls,.ods,.csv" hidden>
   <button class="btn" id="fill" type="button" title="Jo khaane khaali hain unme default bhar do">Default bharo</button>
   <label>Sign <select id="signsel" aria-label="Sign"></select></label>
   <input type="file" id="signfile" accept="image/*" hidden>
@@ -98,7 +100,7 @@ body.cap [contenteditable]:hover,body.cap [contenteditable]:focus{background:non
   <button class="btn" id="print" type="button">Print</button>
   <button class="btn" id="install" type="button">⬇ Add to Home Screen / Download App</button>
 </div>
-<div class="note">Har cheez par click karke badal sakte ho (heading aur column ke naam bhi). Total, Balance aur Amount Due apne aap bante hain. Sab isi browser mein apne aap save hota hai.</div>
+<div class="note">Har cheez par click karke badal sakte ho (heading aur column ke naam bhi). Excel se kai line/column ek saath copy karke yahan paste kar sakte ho. Total, Balance aur Amount Due apne aap bante hain. Sab isi browser mein apne aap save hota hai.</div>
 <div class="wrap"><div class="page" id="pagebox"><table class="s" id="sheet"></table></div>
 <div class="att noprint" id="attbox"><h3>Attachments (bill / payment ki photo)</h3><div class="hint">Har entry ke saamne "+ Photo / PDF" dabao aur bill, cash memo / raseed, payment screenshot chuno: JPG, PNG, iPhone (HEIC), PDF, Word (DOCX), Excel/PowerPoint ki photo — kisi bhi format mein, ek saath kai bhi. Har entry mein collage ka style chun sakte ho. Ek entry ki saari photo ek hi page par collage ban jaati hain ("Page dekho" se dekh lo). Download PDF mein pehle form aayega, phir Attachment-01, 02… wale page.</div><div id="attlist"></div></div>
 </div>
@@ -124,7 +126,7 @@ function periodHTML(f,t){ if(!f&&!t) return ""; const p=s=>{ if(!s) return "__";
 const longDate=s=>{ if(!s) return ""; const d=new Date(s+"T00:00:00"); return `${String(d.getDate()).padStart(2,"0")}-${MON[d.getMonth()]}-${d.getFullYear()}`; };
 // "20/9/26", "2026-09-20", "20-9-2026", "20 sep 26" -> "20-Sep-26"
 function normDate(t){
-  t=String(t||"").trim(); if(!t) return ""; let d,m,y, x;
+  t=String(t||"").trim().replace(/\s*([-/.,])\s*/g,"$1").replace(/,/g,"-"); if(!t) return ""; let d,m,y, x;
   if((x=t.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/))){ y=+x[1]; m=+x[2]; d=+x[3]; }
   else if((x=t.match(/^(\d{1,2})[-/. ](\d{1,2})[-/. ](\d{2,4})$/))){ d=+x[1]; m=+x[2]; y=+x[3]; }
   else if((x=t.match(/^(\d{1,2})[-/. ]?([A-Za-z]{3})[A-Za-z]*[-/. ]?(\d{2,4})$/))){ d=+x[1]; m=MON.findIndex(n=>n.toLowerCase()===x[2].toLowerCase())+1; y=+x[3]; }
@@ -234,7 +236,6 @@ $("#sheet").addEventListener("keydown", e=>{
   if(e.key!=="Enter" || e.shiftKey) return; const el=e.target.closest("[contenteditable]"); if(!el) return; e.preventDefault();
   const all=[...document.querySelectorAll("#sheet [contenteditable]")]; const n=all[all.indexOf(el)+1]; if(n) n.focus(); else el.blur();
 });
-$("#sheet").addEventListener("paste", e=>{ const el=e.target.closest("[contenteditable]"); if(!el) return; e.preventDefault(); document.execCommand("insertText", false, (e.clipboardData||window.clipboardData).getData("text/plain")); });
 $("#sheet").addEventListener("click", e=>{ const b=e.target.closest("[data-delrow]"); if(!b) return; cur.rows.splice(+b.dataset.delrow,1); if(!cur.rows.length) cur.rows=blankRows(1); render(); save(); });
 $("#addrow").addEventListener("click", ()=>{
   // fill the first empty row's remark with the next attachment number when a row gets data later; here just add a row
@@ -447,6 +448,102 @@ $("#pdf").addEventListener("click", async ()=>{
   }catch(err){ document.body.classList.remove("cap"); alert("PDF nahi ban paya: "+(err.message||err)); }
   finally{ busy.remove(); }
 });
+
+// ================= EXCEL: paste many cells at once, or import a whole sheet =================
+const COLS=["sno","dd","dp","da","gap","cd","cp","ca","rm"];
+const cellTxt = v => String(v==null?"":v).replace(/\s+/g," ").trim();
+function parseTSV(text){ // Excel copies rows as lines and cells as tabs; quoted cells may hold new lines
+  const rows=[]; let row=[], cell="", q=false;
+  for(let i=0;i<text.length;i++){ const ch=text[i];
+    if(q){ if(ch==='"'){ if(text[i+1]==='"'){ cell+='"'; i++; } else q=false; } else cell+=ch; continue; }
+    if(ch==='"' && cell==="") { q=true; continue; }
+    if(ch==="\t"){ row.push(cell); cell=""; } else if(ch==="\n"){ row.push(cell); rows.push(row); row=[]; cell=""; } else if(ch!=="\r") cell+=ch; }
+  if(cell!=="" || row.length){ row.push(cell); rows.push(row); }
+  return rows.map(r=>r.map(cellTxt));
+}
+const amtTxt = v => { const t=cellTxt(v); if(!t) return ""; const n=num(t); return n ? String(Number.isInteger(n)?n:+n.toFixed(2)) : t; };
+const isHeaderRow = r => r.some(c=>/^(s\.?\s*no\.?|date|particulars|amt\s*\(rs\.?\)|remarks)$/i.test(c));
+const isEndRow = r => r.some(c=>/^(balance|total)\b/i.test(c));
+// rows of a block pasted into the table, starting at a given row / column
+function pasteRows(grid, startRow, startCol){
+  grid=grid.filter(r=>r.some(c=>c)); if(!grid.length) return 0;
+  const width=Math.max(...grid.map(r=>r.length));
+  if(width>=9) startCol=0; // whole row copied (S.No ... Remarks)
+  let ri=startRow, n=0;
+  for(const r of grid){ if(isHeaderRow(r)) continue; if(isEndRow(r)) break;
+    while(cur.rows.length<=ri) cur.rows.push(blankRows(1)[0]);
+    const row=cur.rows[ri];
+    r.forEach((v,k)=>{ const key=COLS[startCol+k]; if(!key || key==="sno" || key==="gap") return;
+      row[key] = (key==="dd"||key==="cd") ? normDate(v) : (key==="da"||key==="ca") ? amtTxt(v) : v; });
+    ri++; n++; }
+  return n;
+}
+// a whole T-format sheet (copied with Ctrl+A / Ctrl+C, or read from an .xlsx file)
+function sheetToForm(grid){
+  const hi=grid.findIndex(r=>r.some(c=>/^s\.?\s*no/i.test(c))); if(hi<0) return null;
+  const h=grid[hi], idx=re=>h.map((c,i)=>re.test(c)?i:-1).filter(i=>i>=0);
+  const dates=idx(/^date/i), parts=idx(/^particular/i), amts=idx(/^amt/i), rem=idx(/^remark/i)[0];
+  const two=a=>a.length>1 ? [a[0],a[1]] : [-1,a[0]];
+  const [dD,cD]=two(dates), [dP,cP]=two(parts), [dA,cA]=two(amts);
+  const f=newForm(cur); f.rows=[];
+  for(const k of Object.keys(DEFL)) if(!String(f.L[k]||"").trim()) f.L[k]=DEFL[k];
+  for(const k of Object.keys(DEF)) if(!String(f[k]||"").trim()) f[k]=DEF[k];
+  if(f.sign==="none") f.sign="";
+  for(let i=hi+1;i<grid.length;i++){ const r=grid[i]; if(isEndRow(r)) break;
+    const g=k=>k>=0?cellTxt(r[k]):"";
+    const row={dd:normDate(g(dD)), dp:g(dP), da:amtTxt(g(dA)), cd:normDate(g(cD)), cp:g(cP), ca:amtTxt(g(cA)), rm:rem>=0?g(rem):""};
+    if(row.dd||row.dp||row.da||row.cd||row.cp||row.ca) f.rows.push(row); }
+  while(f.rows.length<5) f.rows.push(blankRows(1)[0]);
+  const all=grid.map((r,i)=>r.map(c=>[c,i])).flat().filter(([c])=>c);
+  const after=(re,from)=>{ const x=all.find(([c,i])=>re.test(c) && (from==null||i>from)); return x ? cellTxt(x[0].replace(re,"")) : null; };
+  const nonEmptyRows=grid.filter(r=>r.some(c=>c));
+  if(nonEmptyRows[0]) f.org=nonEmptyRows[0].find(c=>c)||f.org;
+  if(nonEmptyRows[1] && grid.indexOf(nonEmptyRows[1])<hi && !/period/i.test(nonEmptyRows[1].join(" "))) f.proj=nonEmptyRows[1].find(c=>c)||f.proj;
+  const v1=after(/^name\s*:\s*-?\s*/i); if(v1) f.name=v1;
+  const v2=all.find(([c,i])=>/^designation\s*:/i.test(c) && i<hi); if(v2) f.desig=cellTxt(v2[0].replace(/^designation\s*:\s*-?\s*/i,""));
+  const v3=after(/^centre\s*:\s*-?\s*/i); if(v3) f.centre=v3;
+  const sb=all.find(([c])=>/submitted by\s*:/i.test(c)); if(sb) f.sub=cellTxt(sb[0].replace(/^.*submitted by\s*:\s*/i,""));
+  const sd=all.find(([c,i])=>/^designation\s*:/i.test(c) && i>hi); if(sd) f.sdesig=cellTxt(sd[0].replace(/^designation\s*:\s*-?\s*/i,""));
+  const dt=all.find(([c,i])=>/^date\s*:/i.test(c) && i>hi); if(dt){ const n=normDate(dt[0].replace(/^date\s*:\s*/i,"")); const x=n.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2})$/); if(x) f.date=iso(new Date(2000+ +x[3], MON.indexOf(x[2]), +x[1])); }
+  const per=all.find(([c])=>/period/i.test(c)); if(per){ const ds=[...per[0].matchAll(/(\d{1,2})\s*(?:st|nd|rd|th)?\s*[-_ ]*\s*([A-Za-z]{3})[A-Za-z]*\s*[-_ ]*\s*(\d{4})/g)];
+    if(ds[0]) f.pf=iso(new Date(+ds[0][3], MON.findIndex(m=>m.toLowerCase()===ds[0][2].toLowerCase()), +ds[0][1]));
+    if(ds[1]) f.pt=iso(new Date(+ds[1][3], MON.findIndex(m=>m.toLowerCase()===ds[1][2].toLowerCase()), +ds[1][1])); }
+  const numAfter=re=>{ for(const r of grid){ const k=r.findIndex(c=>re.test(c)); if(k>=0){ const v=r.slice(k+1).find(c=>/\d/.test(c)); return v!=null?v:""; } } return null; };
+  const adv=numAfter(/^advance amount/i); if(adv!=null && num(adv)){ f.adv=String(num(adv)); f.advAuto=false; }
+  const ex=numAfter(/^amount spent in excess/i); if(ex!=null && num(ex)) f.excess=String(num(ex));
+  return f;
+}
+function loadForm(f, how){ const fn=String(f.name||"").trim().split(/\s+/)[0].toLowerCase(); const sg=fn && allSigns().find(x=>x.name.toLowerCase().split(/[\s(]+/).includes(fn)); if(sg) f.sign=sg.id; forms.push(f); cur=f; render(); renderPick(); save(); toast2(`${how}: ${f.rows.filter(r=>r.cp||r.ca||r.dp).length} entry bhari gayi. Ek baar dekh lo.`); }
+function toast2(msg){ const t=document.createElement("div"); t.textContent=msg; t.style.cssText="position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#1f3b5c;color:#fff;padding:10px 16px;border-radius:6px;z-index:60;font-size:14px;max-width:90vw"; document.body.appendChild(t); setTimeout(()=>t.remove(),4000); }
+function handleGridPaste(text, el){
+  const grid=parseTSV(text);
+  if(document.activeElement && document.activeElement.blur) document.activeElement.blur(); // save the cell first, so the paste is not overwritten
+  if(grid.some(r=>r.some(c=>/^s\.?\s*no/i.test(c)))){ const f=sheetToForm(grid); if(f){ loadForm(f,"Excel sheet se naya form bana"); return true; } }
+  if(grid.length<2 && !(grid[0]&&grid[0].length>1)) return false; // a single value: normal paste
+  let startRow, startCol;
+  if(el && el.dataset.r!==undefined){ startRow=+el.dataset.r; startCol=COLS.indexOf(el.dataset.c); }
+  else { startRow=cur.rows.findIndex(r=>!(r.cd||r.cp||r.ca||r.dd||r.dp||r.da)); if(startRow<0) startRow=cur.rows.length; const w=Math.max(...grid.map(r=>r.length)); startCol = w>=9 ? 0 : w>=4 ? 5 : 5; }
+  const n=pasteRows(grid, startRow, startCol); if(!n) return false;
+  // fill missing attachment numbers
+  let k=0; cur.rows.forEach(r=>{ if(num(r.ca)){ k++; if(!r.rm) r.rm="Attachment-"+String(k).padStart(2,"0"); } });
+  render(); save(); toast2(`${n} line ek saath bhar di`); return true;
+}
+document.addEventListener("paste", e=>{
+  const text=(e.clipboardData||window.clipboardData).getData("text/plain")||""; if(!text) return;
+  const el=e.target.closest && e.target.closest("[contenteditable]");
+  const inSheet=el && $("#sheet").contains(el);
+  if(el && !inSheet) return;
+  if(/\t|\n./.test(text.trim()) && handleGridPaste(text, inSheet?el:null)){ e.preventDefault(); e.stopImmediatePropagation(); return; }
+  if(inSheet){ e.preventDefault(); document.execCommand("insertText", false, text); }
+}, true);
+$("#xlsbtn").addEventListener("click", ()=>$("#xlsfile").click());
+$("#xlsfile").addEventListener("change", async e=>{ const file=e.target.files[0]; e.target.value=""; if(!file) return;
+  try{ await loadScript("https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js");
+    const wb=XLSX.read(await file.arrayBuffer(), {cellDates:true}); let done=false;
+    for(const name of wb.SheetNames){ const grid=XLSX.utils.sheet_to_json(wb.Sheets[name], {header:1, raw:false, defval:"", dateNF:"d-mmm-yy"}).map(r=>r.map(cellTxt));
+      const f=sheetToForm(grid); if(f){ loadForm(f, `"${name}" sheet se naya form bana`); done=true; break; } }
+    if(!done) alert("Is file mein T-format wali sheet (S.No., Date, Particulars…) nahi mili.");
+  }catch(err){ alert("Excel file nahi padh paye: "+(err.message||err)); } });
 
 load(); render(); renderPick(); save();
 // ---- install as an app
